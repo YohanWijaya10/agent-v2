@@ -10,10 +10,34 @@ const app: Application = express();
 const PORT = process.env.PORT || 3001;
 
 // Middleware
-app.use(cors({
-  origin: process.env.CORS_ORIGIN || 'http://localhost:5173',
-  credentials: true
-}));
+// CORS with support for multiple origins and wildcard subdomains
+const originsEnv = process.env.CORS_ORIGINS || process.env.CORS_ORIGIN || 'http://localhost:5173';
+const allowedOrigins = originsEnv.split(',').map(o => o.trim()).filter(Boolean);
+
+const isAllowedOrigin = (origin: string) => {
+  return allowedOrigins.some(pattern => {
+    if (pattern.startsWith('*.')) {
+      const suffix = pattern.slice(1); // e.g., '.vercel.app'
+      return origin.endsWith(suffix);
+    }
+    return pattern === origin;
+  });
+};
+
+const corsOptions: cors.CorsOptions = {
+  origin: (origin, callback) => {
+    if (!origin) return callback(null, true); // allow non-browser or same-origin requests
+    if (isAllowedOrigin(origin)) return callback(null, true);
+    console.warn('Blocked by CORS, origin:', origin);
+    return callback(new Error('Not allowed by CORS'));
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+};
+
+app.use(cors(corsOptions));
+app.options('*', cors(corsOptions));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
