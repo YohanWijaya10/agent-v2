@@ -202,3 +202,8 @@ export interface StockTurnoverData {
   averageOnHand: number;
   turnoverRate: number;
 }
+
+export interface ExecutiveSummaryResponse {
+  summary: string;
+  generatedAt: string;
+}

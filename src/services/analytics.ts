@@ -533,6 +533,34 @@ class AnalyticsService {
 
     return turnoverData.sort((a, b) => b.turnoverRate - a.turnoverRate);
   }
+
+  async generateExecutiveSummary(): Promise<{
+    metrics: DashboardMetrics;
+    inventory: InventoryValueByCategory[];
+    stockHealth: StockHealthData[];
+    recommendations: ReorderRecommendation[];
+    slowMovingCount: number;
+    upcomingPOs: UpcomingPOData[];
+  }> {
+    const [metrics, inventory, stockHealth, recommendations, slowMoving, upcomingPOs] =
+      await Promise.all([
+        this.getDashboardMetrics(),
+        this.getInventoryValueByCategory(),
+        this.getStockHealthStatus(),
+        this.getReorderRecommendations(),
+        this.getSlowMovingItems(90),
+        this.getUpcomingPOs()
+      ]);
+
+    return {
+      metrics,
+      inventory,
+      stockHealth,
+      recommendations: recommendations.slice(0, 5), // Top 5 urgent items
+      slowMovingCount: slowMoving.length,
+      upcomingPOs: upcomingPOs.slice(0, 3) // Next 3 POs
+    };
+  }
 }
 
 export default new AnalyticsService();
