@@ -252,7 +252,9 @@ class AnalyticsService {
       }
 
       const data = warehouseData.get(warehouseName)!;
-      data[product.category] = (data[product.category] || 0) + balance.qtyOnHand;
+      const current = Number(data[product.category]) || 0;
+      const add = Number((balance as any).qtyOnHand);
+      data[product.category] = current + (isNaN(add) ? 0 : add);
     }
 
     return Array.from(warehouseData.entries()).map(([warehouseName, categories]) => ({
