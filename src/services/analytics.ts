@@ -238,8 +238,8 @@ class AnalyticsService {
     const productMap = new Map(products.map(p => [p.productId, p]));
     const warehouseMap = new Map(warehouses.map(w => [w.warehouseId, w]));
 
-    // Group by warehouse and category
-    const warehouseData = new Map<string, Record<ProductCategory, number>>();
+    // Group by warehouse and category (dynamic categories)
+    const warehouseData = new Map<string, Record<string, number>>();
 
     for (const balance of balances) {
       const product = productMap.get(balance.productId);
@@ -248,16 +248,11 @@ class AnalyticsService {
       const warehouseName = warehouseMap.get(balance.warehouseId)?.name || 'Unknown';
 
       if (!warehouseData.has(warehouseName)) {
-        warehouseData.set(warehouseName, {
-          'Raw Material': 0,
-          'Additive': 0,
-          'Packaging': 0,
-          'Finished Goods': 0
-        });
+        warehouseData.set(warehouseName, {});
       }
 
       const data = warehouseData.get(warehouseName)!;
-      data[product.category] += balance.qtyOnHand;
+      data[product.category] = (data[product.category] || 0) + balance.qtyOnHand;
     }
 
     return Array.from(warehouseData.entries()).map(([warehouseName, categories]) => ({

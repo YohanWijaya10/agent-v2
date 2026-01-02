@@ -110,10 +110,8 @@ export interface TopProductData {
 
 export interface WarehouseDistributionData {
   warehouseName: string;
-  'Raw Material': number;
-  'Additive': number;
-  'Packaging': number;
-  'Finished Goods': number;
+  // Dynamic categories from database; keys are category names with numeric values
+  [category: string]: string | number;
 }
 
 export type StockHealthStatus = 'OK' | 'Warning' | 'Critical';
