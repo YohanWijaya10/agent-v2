@@ -125,12 +125,13 @@ Format yang diharapkan:
 
 Gunakan bahasa Indonesia profesional yang mudah dipahami. Berikan angka dalam format Rupiah. Fokus pada actionable insights.`;
 
-    // Generate AI summary
-    const aiResponse = await deepseek.chat(prompt, []);
+    // Generate AI summary (text-only, no function calling for speed)
+    const systemMessage = 'Anda adalah AI Assistant untuk ringkasan eksekutif inventory management. Berikan analisis yang profesional, actionable, dan mudah dipahami dalam Bahasa Indonesia.';
+    const summaryText = await deepseek.generateTextOnly(prompt, systemMessage);
 
     // Cache the result
     const responseData = {
-      summary: aiResponse.response,
+      summary: summaryText,
       generatedAt: new Date().toISOString()
     };
 

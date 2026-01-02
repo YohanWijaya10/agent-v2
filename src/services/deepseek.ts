@@ -139,6 +139,28 @@ class DeepSeekService {
       'Bagaimana performa supplier kita?'
     ];
   }
+
+  async generateTextOnly(prompt: string, systemMessage?: string): Promise<string> {
+    try {
+      const messages: any[] = [
+        { role: 'system', content: systemMessage || 'You are a helpful AI assistant.' },
+        { role: 'user', content: prompt }
+      ];
+
+      const response = await this.client.chat.completions.create({
+        model: 'deepseek-chat',
+        messages,
+        temperature: 0.7,
+        max_tokens: 2000
+        // No tools - direct text generation only
+      });
+
+      return response.choices[0].message.content || 'Maaf, saya tidak dapat memberikan jawaban saat ini.';
+    } catch (error: any) {
+      console.error('DeepSeek API error:', error);
+      throw new Error(`Failed to generate text: ${error.message}`);
+    }
+  }
 }
 
 export default new DeepSeekService();
