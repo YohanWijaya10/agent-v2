@@ -273,3 +273,57 @@ export interface ProductPerformanceInsightResponse {
   recommendations: string[];
   generatedAt: string;
 }
+
+// Anomaly Detection Types
+export type AnomalyType = 'unusual_transaction' | 'stockout' | 'price_variance';
+export type SeverityLevel = 'critical' | 'high' | 'medium' | 'low';
+
+export interface AnomalyItem {
+  anomalyId: string;
+  type: AnomalyType;
+  productId: string;
+  productName: string;
+  warehouseId?: string;
+  warehouseName?: string;
+  severity: SeverityLevel;
+  changePercentage: number;
+  baselineValue: number;
+  currentValue: number;
+  detectedAt: string;
+  description: string;
+  insight?: string;
+}
+
+export interface AlertSummary {
+  critical: number;
+  high: number;
+  medium: number;
+  low: number;
+  totalCount: number;
+}
+
+export interface StockoutHistoryItem {
+  productId: string;
+  productName: string;
+  warehouseId: string;
+  warehouseName: string;
+  stockoutDays: number;
+  frequency: number;
+  lastStockout: string | null;
+  currentQty: number;
+  safetyStock: number;
+}
+
+export interface AnomalyDetectionResponse {
+  summary: AlertSummary;
+  anomalies: AnomalyItem[];
+  stockoutHistory: StockoutHistoryItem[];
+  generatedAt: string;
+}
+
+export interface AnomalyInsightResponse {
+  insights: string;
+  topCriticalItems: string[];
+  recommendations: string[];
+  generatedAt: string;
+}

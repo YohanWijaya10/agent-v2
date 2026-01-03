@@ -18,7 +18,12 @@ import {
   ProductHealthDetail,
   ProductPerformanceData,
   PerformanceSummary,
-  PerformanceCategory
+  PerformanceCategory,
+  InventoryTransaction,
+  AnomalyItem,
+  AlertSummary,
+  StockoutHistoryItem,
+  SeverityLevel
 } from '../types';
 
 class AnalyticsService {
@@ -793,6 +798,205 @@ class AnalyticsService {
       topStars: starProducts.slice(0, 5),
       bottomDogs: dogProducts.slice(0, 5)
     };
+  }
+
+  async detectUnusualTransactions(
+    lookbackDays: number = 7,
+    thresholdPercentage: number = 150
+  ): Promise<AnomalyItem[]> {
+    const [transactions, products, warehouses] = await Promise.all([
+      database.getInventoryTransactions(),
+      database.getProducts(),
+      database.getWarehouses()
+    ]);
+
+    const productMap = new Map(products.map(p => [p.productId, p]));
+    const warehouseMap = new Map(warehouses.map(w => [w.warehouseId, w]));
+
+    const cutoffDate = new Date();
+    cutoffDate.setDate(cutoffDate.getDate() - lookbackDays);
+
+    const baselineCutoff = new Date(cutoffDate);
+    baselineCutoff.setDate(baselineCutoff.getDate() - lookbackDays);
+
+    const anomalies: AnomalyItem[] = [];
+
+    // Group transactions by product/warehouse/type
+    const recentTrx = transactions.filter(t => new Date(t.trxDate) >= cutoffDate);
+    const baselineTrx = transactions.filter(t => {
+      const date = new Date(t.trxDate);
+      return date >= baselineCutoff && date < cutoffDate;
+    });
+
+    // Calculate averages per product/warehouse/type
+    const calculateAverage = (trxList: InventoryTransaction[], prodId: string, whId: string, type: 'ISSUE' | 'RECEIPT') => {
+      const filtered = trxList.filter(t =>
+        t.productId === prodId && t.warehouseId === whId && t.trxType === type
+      );
+      if (filtered.length === 0) return 0;
+      return filtered.reduce((sum, t) => sum + t.qty, 0) / lookbackDays;
+    };
+
+    // Compare recent vs baseline
+    const productWarehousePairs = new Set(
+      recentTrx.map(t => `${t.productId}|${t.warehouseId}|${t.trxType}`)
+    );
+
+    for (const pair of productWarehousePairs) {
+      const [productId, warehouseId, trxType] = pair.split('|');
+      const type = trxType as 'ISSUE' | 'RECEIPT';
+
+      const baselineAvg = calculateAverage(baselineTrx, productId, warehouseId, type);
+      const recentAvg = calculateAverage(recentTrx, productId, warehouseId, type);
+
+      // Skip if no baseline data
+      if (baselineAvg === 0) continue;
+
+      const changePercentage = ((recentAvg - baselineAvg) / baselineAvg) * 100;
+
+      // Detect anomaly if change > threshold
+      if (Math.abs(changePercentage) >= thresholdPercentage) {
+        const product = productMap.get(productId);
+        const warehouse = warehouseMap.get(warehouseId);
+
+        let severity: SeverityLevel = 'low';
+        if (Math.abs(changePercentage) >= 300) severity = 'critical';
+        else if (Math.abs(changePercentage) >= 200) severity = 'high';
+        else if (Math.abs(changePercentage) >= 150) severity = 'medium';
+
+        anomalies.push({
+          anomalyId: `${productId}-${warehouseId}-${type}-${Date.now()}`,
+          type: 'unusual_transaction',
+          productId,
+          productName: product?.name || 'Unknown',
+          warehouseId,
+          warehouseName: warehouse?.name || 'Unknown',
+          severity,
+          changePercentage,
+          baselineValue: baselineAvg,
+          currentValue: recentAvg,
+          detectedAt: new Date().toISOString(),
+          description: `${type} ${changePercentage > 0 ? 'meningkat' : 'menurun'} ${Math.abs(changePercentage).toFixed(1)}% vs ${lookbackDays} hari sebelumnya`
+        });
+      }
+    }
+
+    return anomalies.sort((a, b) => {
+      const severityOrder = { critical: 0, high: 1, medium: 2, low: 3 };
+      return severityOrder[a.severity] - severityOrder[b.severity];
+    });
+  }
+
+  async getCriticalAlerts(): Promise<{ summary: AlertSummary; alerts: AnomalyItem[] }> {
+    // Aggregate multiple anomaly detection methods
+    const [unusualTrx, stockoutHistory] = await Promise.all([
+      this.detectUnusualTransactions(7, 150),
+      this.analyzeStockoutHistory(90)
+    ]);
+
+    const allAlerts: AnomalyItem[] = [...unusualTrx];
+
+    // Convert stockout history to anomalies
+    for (const stockout of stockoutHistory) {
+      if (stockout.frequency >= 3) {
+        allAlerts.push({
+          anomalyId: `stockout-${stockout.productId}-${stockout.warehouseId}`,
+          type: 'stockout',
+          productId: stockout.productId,
+          productName: stockout.productName,
+          warehouseId: stockout.warehouseId,
+          warehouseName: stockout.warehouseName,
+          severity: stockout.frequency >= 5 ? 'critical' : 'high',
+          changePercentage: 0,
+          baselineValue: stockout.safetyStock,
+          currentValue: stockout.currentQty,
+          detectedAt: new Date().toISOString(),
+          description: `Stockout ${stockout.frequency}x dalam 90 hari terakhir`
+        });
+      }
+    }
+
+    // Calculate summary
+    const summary: AlertSummary = {
+      critical: allAlerts.filter(a => a.severity === 'critical').length,
+      high: allAlerts.filter(a => a.severity === 'high').length,
+      medium: allAlerts.filter(a => a.severity === 'medium').length,
+      low: allAlerts.filter(a => a.severity === 'low').length,
+      totalCount: allAlerts.length
+    };
+
+    return { summary, alerts: allAlerts };
+  }
+
+  async analyzeStockoutHistory(days: number = 90): Promise<StockoutHistoryItem[]> {
+    const [transactions, balances, products, warehouses] = await Promise.all([
+      database.getInventoryTransactions(),
+      database.getInventoryBalances(),
+      database.getProducts(),
+      database.getWarehouses()
+    ]);
+
+    const productMap = new Map(products.map(p => [p.productId, p]));
+    const warehouseMap = new Map(warehouses.map(w => [w.warehouseId, w]));
+
+    const cutoffDate = new Date();
+    cutoffDate.setDate(cutoffDate.getDate() - days);
+
+    const stockoutHistory: StockoutHistoryItem[] = [];
+
+    // For each product/warehouse, track when qty went to 0
+    for (const balance of balances) {
+      const productTrx = transactions
+        .filter(t =>
+          t.productId === balance.productId &&
+          t.warehouseId === balance.warehouseId &&
+          new Date(t.trxDate) >= cutoffDate
+        )
+        .sort((a, b) => new Date(a.trxDate).getTime() - new Date(b.trxDate).getTime());
+
+      let runningQty = balance.qtyOnHand;
+      let stockoutDays = 0;
+      let stockoutFrequency = 0;
+      let lastStockoutDate: Date | null = null;
+      let inStockout = runningQty === 0;
+
+      // Simulate backward from current state
+      for (let i = productTrx.length - 1; i >= 0; i--) {
+        const trx = productTrx[i];
+        runningQty -= trx.signedQty; // Reverse transaction
+
+        if (runningQty <= 0 && !inStockout) {
+          inStockout = true;
+          stockoutFrequency++;
+          lastStockoutDate = new Date(trx.trxDate);
+        } else if (runningQty > 0 && inStockout) {
+          inStockout = false;
+        }
+
+        if (runningQty <= 0) {
+          stockoutDays++;
+        }
+      }
+
+      if (stockoutFrequency > 0) {
+        const product = productMap.get(balance.productId);
+        const warehouse = warehouseMap.get(balance.warehouseId);
+
+        stockoutHistory.push({
+          productId: balance.productId,
+          productName: product?.name || 'Unknown',
+          warehouseId: balance.warehouseId,
+          warehouseName: warehouse?.name || 'Unknown',
+          stockoutDays,
+          frequency: stockoutFrequency,
+          lastStockout: lastStockoutDate?.toISOString() || null,
+          currentQty: balance.qtyOnHand,
+          safetyStock: balance.safetyStock
+        });
+      }
+    }
+
+    return stockoutHistory.sort((a, b) => b.frequency - a.frequency);
   }
 }
 

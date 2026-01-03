@@ -109,6 +109,39 @@ export async function handleToolCall(functionName: string, args: any): Promise<T
           data
         };
 
+      case 'detect_unusual_transactions':
+        data = await analytics.detectUnusualTransactions(
+          args.lookbackDays || 7,
+          args.thresholdPercentage || 150
+        );
+        return {
+          success: true,
+          data: {
+            count: data.length,
+            criticalCount: data.filter(a => a.severity === 'critical').length,
+            highCount: data.filter(a => a.severity === 'high').length,
+            anomalies: data
+          }
+        };
+
+      case 'get_critical_alerts':
+        data = await analytics.getCriticalAlerts();
+        return {
+          success: true,
+          data
+        };
+
+      case 'analyze_stockout_history':
+        data = await analytics.analyzeStockoutHistory(args.days || 90);
+        return {
+          success: true,
+          data: {
+            totalProducts: data.length,
+            highFrequency: data.filter(s => s.frequency >= 5).length,
+            items: data
+          }
+        };
+
       default:
         return {
           success: false,

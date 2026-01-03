@@ -6,7 +6,9 @@ import {
   StockHealthDetailsResponse,
   ProductPerformanceResponse,
   ProductPerformanceInsightResponse,
-  ProductCategory
+  ProductCategory,
+  AnomalyDetectionResponse,
+  AnomalyInsightResponse
 } from '../types';
 
 const router = express.Router();
@@ -408,6 +410,99 @@ PENTING:
     console.error('Error generating product performance insights:', error);
     res.status(500).json({
       error: 'Failed to generate insights',
+      message: error.message
+    });
+  }
+});
+
+// Get anomaly detection data
+router.get('/anomaly-detection', async (req: Request, res: Response) => {
+  try {
+    const [unusualTrx, criticalAlerts, stockoutHistory] = await Promise.all([
+      analytics.detectUnusualTransactions(7, 150),
+      analytics.getCriticalAlerts(),
+      analytics.analyzeStockoutHistory(90)
+    ]);
+
+    const responseData: AnomalyDetectionResponse = {
+      summary: criticalAlerts.summary,
+      anomalies: criticalAlerts.alerts,
+      stockoutHistory,
+      generatedAt: new Date().toISOString()
+    };
+
+    res.json(responseData);
+  } catch (error: any) {
+    console.error('Error fetching anomaly detection data:', error);
+    res.status(500).json({
+      error: 'Failed to fetch anomaly detection data',
+      message: error.message
+    });
+  }
+});
+
+// Get AI-generated anomaly insights
+router.get('/anomaly-insights', async (req: Request, res: Response) => {
+  try {
+    const anomalyData = await analytics.getCriticalAlerts();
+    const stockoutHistory = await analytics.analyzeStockoutHistory(90);
+
+    const topCritical = anomalyData.alerts
+      .filter(a => a.severity === 'critical')
+      .slice(0, 5);
+
+    const prompt = `Analisis anomali inventory berdasarkan data berikut:
+
+**Alert Summary:**
+- Critical: ${anomalyData.summary.critical} alerts
+- High: ${anomalyData.summary.high} alerts
+- Medium: ${anomalyData.summary.medium} alerts
+- Low: ${anomalyData.summary.low} alerts
+
+**Top 5 Critical Anomalies:**
+${topCritical.map((a, i) => `${i + 1}. ${a.productName} (${a.warehouseName}): ${a.description}`).join('\n')}
+
+**Stockout Patterns (90 hari):**
+- Total produk dengan stockout: ${stockoutHistory.length}
+- Frekuensi tinggi (≥5x): ${stockoutHistory.filter(s => s.frequency >= 5).length}
+- Top 3: ${stockoutHistory.slice(0, 3).map(s => `${s.productName} (${s.frequency}x)`).join(', ')}
+
+Berikan analisis dalam format Markdown:
+
+### 🚨 Ringkasan Anomali Terdeteksi
+[Paragraf tentang kondisi overall dan severity distribution. Gunakan **bold** untuk highlight critical findings]
+
+### 📊 Analisis Pola Anomali
+[Paragraf tentang pola yang terlihat dari unusual transactions dan stockout history. Highlight produk/pattern dengan **bold**]
+
+### ⚠️ Risiko & Dampak Bisnis
+[Paragraf tentang potensi risiko jika tidak ditindaklanjuti. Gunakan **bold** untuk dampak kritis]
+
+### 💡 Rekomendasi Tindakan
+[Paragraf dengan 3-4 action items spesifik dan prioritized. Gunakan **bold** untuk action verbs dan urgency]
+
+PENTING:
+- Gunakan heading ### untuk sections
+- **Bold** untuk produk, angka, dan key points
+- Bahasa Indonesia profesional
+- Fokus pada actionable insights
+- Jangan gunakan bullet points, hanya paragraf`;
+
+    const systemMessage = 'Anda adalah AI Analyst untuk anomaly detection dalam inventory management. Berikan analisis yang mendalam, actionable, dan fokus pada risk mitigation dalam Bahasa Indonesia.';
+    const insightsText = await deepseek.generateTextOnly(prompt, systemMessage);
+
+    const responseData: AnomalyInsightResponse = {
+      insights: insightsText,
+      topCriticalItems: topCritical.map(a => a.productName),
+      recommendations: [],
+      generatedAt: new Date().toISOString()
+    };
+
+    res.json(responseData);
+  } catch (error: any) {
+    console.error('Error generating anomaly insights:', error);
+    res.status(500).json({
+      error: 'Failed to generate anomaly insights',
       message: error.message
     });
   }

@@ -163,5 +163,55 @@ export const tools = [
         required: []
       }
     }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'detect_unusual_transactions',
+      description: 'Mendeteksi anomali transaksi ISSUE/RECEIPT yang berubah signifikan (>150%) dibanding rata-rata periode sebelumnya',
+      parameters: {
+        type: 'object',
+        properties: {
+          lookbackDays: {
+            type: 'number',
+            description: 'Jumlah hari untuk baseline comparison (default: 7)'
+          },
+          thresholdPercentage: {
+            type: 'number',
+            description: 'Persentase perubahan minimum untuk dianggap anomali (default: 150)'
+          }
+        },
+        required: []
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'get_critical_alerts',
+      description: 'Mendapatkan agregasi semua alert dengan urgency level (critical/high/medium/low) termasuk unusual transactions dan stockout patterns',
+      parameters: {
+        type: 'object',
+        properties: {},
+        required: []
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'analyze_stockout_history',
+      description: 'Melacak riwayat stockout (qty = 0) dalam 90 hari terakhir per produk/gudang untuk identifikasi pola kekurangan stok',
+      parameters: {
+        type: 'object',
+        properties: {
+          days: {
+            type: 'number',
+            description: 'Periode analisis dalam hari (default: 90)'
+          }
+        },
+        required: []
+      }
+    }
   }
 ];
