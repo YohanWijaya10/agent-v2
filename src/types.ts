@@ -207,3 +207,24 @@ export interface ExecutiveSummaryResponse {
   summary: string;
   generatedAt: string;
 }
+
+export interface ProductHealthDetail {
+  productId: string;
+  productName: string;
+  warehouseId: string;
+  warehouseName: string;
+  qtyOnHand: number;
+  safetyStock: number;
+  reorderPoint: number;
+  status: 'Critical' | 'Warning';
+  insight?: string;
+}
+
+export interface StockHealthDetailsResponse {
+  critical: ProductHealthDetail[];
+  warning: ProductHealthDetail[];
+  generatedAt: string;
+  totalCritical: number;
+  totalWarning: number;
+  warehouseFilter?: string;
+}

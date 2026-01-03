@@ -14,7 +14,8 @@ import {
   Product,
   InventoryBalance,
   PurchaseOrderItem,
-  ProductCategory
+  ProductCategory,
+  ProductHealthDetail
 } from '../types';
 
 class AnalyticsService {
@@ -559,6 +560,66 @@ class AnalyticsService {
       recommendations: recommendations.slice(0, 5), // Top 5 urgent items
       slowMovingCount: slowMoving.length,
       upcomingPOs: upcomingPOs.slice(0, 3) // Next 3 POs
+    };
+  }
+
+  async getStockHealthDetails(warehouseId?: string, limit: number = 10): Promise<{
+    critical: ProductHealthDetail[];
+    warning: ProductHealthDetail[];
+    totalCritical: number;
+    totalWarning: number;
+  }> {
+    const [balances, products, warehouses] = await Promise.all([
+      database.getInventoryBalances(),
+      database.getProducts(),
+      database.getWarehouses()
+    ]);
+
+    const productMap = new Map(products.map(p => [p.productId, p]));
+    const warehouseMap = new Map(warehouses.map(w => [w.warehouseId, w]));
+
+    // Filter by warehouse if specified
+    const filteredBalances = warehouseId
+      ? balances.filter(b => b.warehouseId === warehouseId)
+      : balances;
+
+    const criticalItems: ProductHealthDetail[] = [];
+    const warningItems: ProductHealthDetail[] = [];
+
+    for (const balance of filteredBalances) {
+      const product = productMap.get(balance.productId);
+      const warehouse = warehouseMap.get(balance.warehouseId);
+      if (!product || !warehouse) continue;
+
+      const detail: ProductHealthDetail = {
+        productId: balance.productId,
+        productName: product.name,
+        warehouseId: balance.warehouseId,
+        warehouseName: warehouse.name,
+        qtyOnHand: balance.qtyOnHand,
+        safetyStock: balance.safetyStock,
+        reorderPoint: balance.reorderPoint,
+        status: 'Critical'
+      };
+
+      if (balance.qtyOnHand < balance.safetyStock) {
+        detail.status = 'Critical';
+        criticalItems.push(detail);
+      } else if (balance.qtyOnHand < balance.reorderPoint) {
+        detail.status = 'Warning';
+        warningItems.push(detail);
+      }
+    }
+
+    // Sort by urgency (most critical first)
+    criticalItems.sort((a, b) => (a.qtyOnHand / a.safetyStock) - (b.qtyOnHand / b.safetyStock));
+    warningItems.sort((a, b) => (a.qtyOnHand / a.reorderPoint) - (b.qtyOnHand / b.reorderPoint));
+
+    return {
+      critical: criticalItems.slice(0, limit),
+      warning: warningItems.slice(0, limit),
+      totalCritical: criticalItems.length,
+      totalWarning: warningItems.length
     };
   }
 }

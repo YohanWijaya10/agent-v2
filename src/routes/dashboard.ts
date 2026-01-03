@@ -1,11 +1,19 @@
 import express, { Request, Response } from 'express';
 import analytics from '../services/analytics';
 import deepseek from '../services/deepseek';
+import { ProductHealthDetail, StockHealthDetailsResponse } from '../types';
 
 const router = express.Router();
 
 // Cache for executive summary (5-minute TTL)
 let summaryCache: { data: any; timestamp: number } | null = null;
+
+// Cache for stock health details (5-minute TTL)
+let stockHealthDetailsCache: {
+  data: any;
+  timestamp: number;
+  warehouseFilter?: string
+} | null = null;
 
 // Get all dashboard metrics
 router.get('/metrics', async (req: Request, res: Response) => {
@@ -99,7 +107,7 @@ router.get('/executive-summary', async (req: Request, res: Response) => {
     const summaryData = await analytics.generateExecutiveSummary();
 
     // Build prompt for AI
-    const prompt = `Buatlah ringkasan eksekutif inventory dalam format PARAGRAF (bukan bullet points).
+    const prompt = `Buatlah ringkasan eksekutif inventory dalam format MARKDOWN dengan struktur yang jelas.
 
 Data Inventory Saat Ini:
 - Total Inventory Value: Rp ${summaryData.metrics.totalInventoryValue.toLocaleString('id-ID')}
@@ -116,14 +124,26 @@ Data Inventory Saat Ini:
     currentQty: r.currentQty
   })))}
 
-Format yang diharapkan:
-- 3-4 paragraf deskriptif yang mengalir
-- Paragraf 1: Status finansial dan kesehatan inventory secara keseluruhan
-- Paragraf 2: Kondisi stok (critical, warning, slow-moving)
-- Paragraf 3: Tindakan segera yang diperlukan (urgent reorders)
-- Paragraf 4 (opsional): Insight dan rekomendasi AI
+FORMAT WAJIB (gunakan Markdown):
+### 📊 Status Finansial & Kesehatan Inventory
+[Paragraf deskriptif tentang kondisi finansial dan kesehatan inventory. Gunakan **bold** untuk highlight angka penting]
 
-Gunakan bahasa Indonesia profesional yang mudah dipahami. Berikan angka dalam format Rupiah. Fokus pada actionable insights.`;
+### ⚠️ Kondisi Stok & Perhatian Khusus
+[Paragraf tentang critical items, warning, slow-moving. Gunakan **bold** untuk produk/angka yang butuh perhatian]
+
+### 🎯 Tindakan Segera Diperlukan
+[Paragraf tentang urgent reorders dan action items. Gunakan **bold** untuk urgency dan nama produk]
+
+### 💡 Insight & Rekomendasi
+[Paragraf insight AI dan rekomendasi strategis. Gunakan **bold** untuk highlight key points]
+
+PENTING:
+- Gunakan heading ### untuk setiap section
+- Gunakan **bold** untuk highlight angka, nama produk, dan key points
+- Tulis dalam bahasa Indonesia profesional
+- Berikan angka dalam format Rupiah yang jelas
+- Fokus pada actionable insights
+- Jangan gunakan bullet points, hanya paragraf yang mengalir`;
 
     // Generate AI summary (text-only, no function calling for speed)
     const systemMessage = 'Anda adalah AI Assistant untuk ringkasan eksekutif inventory management. Berikan analisis yang profesional, actionable, dan mudah dipahami dalam Bahasa Indonesia.';
@@ -145,6 +165,101 @@ Gunakan bahasa Indonesia profesional yang mudah dipahami. Berikan angka dalam fo
     console.error('Error generating executive summary:', error);
     res.status(500).json({
       error: 'Failed to generate summary',
+      message: error.message
+    });
+  }
+});
+
+// Helper function for AI insight generation
+async function generateProductHealthInsight(product: ProductHealthDetail): Promise<string> {
+  const deficit = product.status === 'Critical'
+    ? product.safetyStock - product.qtyOnHand
+    : product.reorderPoint - product.qtyOnHand;
+
+  const percentageOfThreshold = product.status === 'Critical'
+    ? (product.qtyOnHand / product.safetyStock) * 100
+    : (product.qtyOnHand / product.reorderPoint) * 100;
+
+  const prompt = `Analisis stok untuk produk berikut:
+
+Produk: ${product.productName}
+Gudang: ${product.warehouseName}
+Status: ${product.status}
+Stok saat ini: ${product.qtyOnHand} unit
+Safety stock: ${product.safetyStock} unit
+Reorder point: ${product.reorderPoint} unit
+Kekurangan: ${deficit} unit (${percentageOfThreshold.toFixed(1)}% dari target)
+
+Berikan insight dalam 2-3 kalimat yang menjelaskan:
+1. Mengapa status ini ${product.status.toLowerCase()} dan seberapa urgent
+2. Dampak bisnis jika tidak ditindaklanjuti
+3. Tindakan spesifik yang harus diambil segera
+
+Format: Tulis dalam Bahasa Indonesia profesional, langsung to the point, tanpa prefix "Insight:" atau sejenisnya.`;
+
+  const systemMessage = 'Anda adalah AI analyst untuk inventory management. Berikan insight yang actionable, spesifik, dan mudah dipahami dalam Bahasa Indonesia.';
+
+  try {
+    return await deepseek.generateTextOnly(prompt, systemMessage);
+  } catch (error) {
+    console.error(`Failed to generate insight for ${product.productName}:`, error);
+    return `Produk ini dalam status ${product.status} dengan ${deficit} unit kekurangan dari target. Segera lakukan reorder untuk menghindari stockout.`;
+  }
+}
+
+// Get stock health details with AI insights
+router.get('/stock-health-details', async (req: Request, res: Response) => {
+  try {
+    const warehouseId = req.query.warehouseId as string | undefined;
+    const now = Date.now();
+
+    // Check cache (5-minute TTL, match warehouse filter)
+    if (
+      stockHealthDetailsCache &&
+      now - stockHealthDetailsCache.timestamp < 300000 &&
+      stockHealthDetailsCache.warehouseFilter === warehouseId
+    ) {
+      return res.json(stockHealthDetailsCache.data);
+    }
+
+    // Fetch stock health details
+    const details = await analytics.getStockHealthDetails(warehouseId, 10);
+
+    // Generate AI insights in parallel
+    const allProducts = [...details.critical, ...details.warning];
+
+    const productsWithInsights = await Promise.all(
+      allProducts.map(async (product) => {
+        const insight = await generateProductHealthInsight(product);
+        return { ...product, insight };
+      })
+    );
+
+    // Split back into critical and warning
+    const criticalWithInsights = productsWithInsights.filter(p => p.status === 'Critical');
+    const warningWithInsights = productsWithInsights.filter(p => p.status === 'Warning');
+
+    const responseData: StockHealthDetailsResponse = {
+      critical: criticalWithInsights,
+      warning: warningWithInsights,
+      totalCritical: details.totalCritical,
+      totalWarning: details.totalWarning,
+      generatedAt: new Date().toISOString(),
+      warehouseFilter: warehouseId
+    };
+
+    // Cache the result
+    stockHealthDetailsCache = {
+      data: responseData,
+      timestamp: now,
+      warehouseFilter: warehouseId
+    };
+
+    res.json(responseData);
+  } catch (error: any) {
+    console.error('Error fetching stock health details:', error);
+    res.status(500).json({
+      error: 'Failed to fetch stock health details',
       message: error.message
     });
   }
