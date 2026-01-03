@@ -228,3 +228,48 @@ export interface StockHealthDetailsResponse {
   totalWarning: number;
   warehouseFilter?: string;
 }
+
+// Product Performance Analysis Types
+export type PerformanceCategory = 'Star' | 'Cash Cow' | 'Question Mark' | 'Dog';
+
+export interface ProductPerformanceData {
+  productId: string;
+  productName: string;
+  sku: string;
+  category: ProductCategory;
+  turnoverRate: number;
+  revenuePotential: number;
+  totalIssued30Days: number;
+  averageOnHand: number;
+  latestUnitCost: number;
+  performanceCategory: PerformanceCategory;
+  warehouseId?: string;
+  warehouseName?: string;
+}
+
+export interface PerformanceSummary {
+  stars: number;
+  cashCows: number;
+  questionMarks: number;
+  dogs: number;
+  medianTurnover: number;
+  medianRevenue: number;
+}
+
+export interface ProductPerformanceResponse {
+  summary: PerformanceSummary;
+  products: ProductPerformanceData[];
+  topStars: ProductPerformanceData[];
+  bottomDogs: ProductPerformanceData[];
+  generatedAt: string;
+  warehouseFilter?: string;
+  categoryFilter?: ProductCategory;
+}
+
+export interface ProductPerformanceInsightResponse {
+  insights: string;
+  topPerformers: string[];
+  bottomPerformers: string[];
+  recommendations: string[];
+  generatedAt: string;
+}

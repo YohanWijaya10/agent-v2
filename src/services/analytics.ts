@@ -15,7 +15,10 @@ import {
   InventoryBalance,
   PurchaseOrderItem,
   ProductCategory,
-  ProductHealthDetail
+  ProductHealthDetail,
+  ProductPerformanceData,
+  PerformanceSummary,
+  PerformanceCategory
 } from '../types';
 
 class AnalyticsService {
@@ -634,6 +637,161 @@ class AnalyticsService {
       warning: warningItems.slice(0, limit),
       totalCritical: criticalItems.length,
       totalWarning: warningItems.length
+    };
+  }
+
+  async getProductPerformance(
+    warehouseId?: string,
+    categoryFilter?: ProductCategory,
+    days: number = 30
+  ): Promise<{
+    summary: PerformanceSummary;
+    products: ProductPerformanceData[];
+    topStars: ProductPerformanceData[];
+    bottomDogs: ProductPerformanceData[];
+  }> {
+    // Step 1: Parallel fetch all required data
+    const [transactions, balances, products, poItems, warehouses] = await Promise.all([
+      database.getInventoryTransactions(),
+      database.getInventoryBalances(),
+      database.getProducts(),
+      database.getPurchaseOrderItems(),
+      database.getWarehouses()
+    ]);
+
+    // Step 2: Build lookup maps for O(1) performance
+    const productMap = new Map(products.map(p => [p.productId, p]));
+    const warehouseMap = new Map(warehouses.map(w => [w.warehouseId, w]));
+
+    // Latest unit cost map (sorted by createdAt desc, take first)
+    const latestUnitCost = new Map<string, number>();
+    const sortedPOItems = [...poItems].sort((a, b) =>
+      new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+    );
+    for (const item of sortedPOItems) {
+      if (!latestUnitCost.has(item.productId)) {
+        latestUnitCost.set(item.productId, item.unitCost);
+      }
+    }
+
+    // Step 3: Calculate cutoff date
+    const cutoffDate = new Date();
+    cutoffDate.setDate(cutoffDate.getDate() - days);
+
+    // Step 4: Filter balances by warehouse if specified
+    const filteredBalances = warehouseId
+      ? balances.filter(b => b.warehouseId === warehouseId)
+      : balances;
+
+    // Step 5: Calculate performance metrics per product
+    const performanceData: ProductPerformanceData[] = [];
+
+    for (const product of products) {
+      // Apply category filter if specified
+      if (categoryFilter && product.category !== categoryFilter) continue;
+
+      // Get total ISSUE qty in last N days
+      const totalIssued = transactions
+        .filter(t =>
+          t.productId === product.productId &&
+          t.trxType === 'ISSUE' &&
+          new Date(t.trxDate) >= cutoffDate &&
+          (!warehouseId || t.warehouseId === warehouseId)
+        )
+        .reduce((sum, t) => sum + t.qty, 0);
+
+      // Get average stock on hand across filtered warehouses
+      const productBalances = filteredBalances.filter(b => b.productId === product.productId);
+      if (productBalances.length === 0) continue; // Skip if no inventory in filtered warehouses
+
+      const averageOnHand = productBalances.reduce((sum, b) => sum + b.qtyOnHand, 0) / productBalances.length;
+
+      // Skip products with zero average stock (avoid division by zero)
+      if (averageOnHand === 0) continue;
+
+      // Calculate metrics
+      const turnoverRate = totalIssued / averageOnHand;
+      const unitCost = latestUnitCost.get(product.productId) || 0;
+      const revenuePotential = unitCost * totalIssued;
+
+      // For warehouse-specific view, include warehouse info
+      let warehouseInfo: { warehouseId?: string; warehouseName?: string } = {};
+      if (warehouseId && productBalances.length > 0) {
+        warehouseInfo = {
+          warehouseId: productBalances[0].warehouseId,
+          warehouseName: warehouseMap.get(productBalances[0].warehouseId)?.name
+        };
+      }
+
+      performanceData.push({
+        productId: product.productId,
+        productName: product.name,
+        sku: product.sku,
+        category: product.category,
+        turnoverRate,
+        revenuePotential,
+        totalIssued30Days: totalIssued,
+        averageOnHand,
+        latestUnitCost: unitCost,
+        performanceCategory: 'Question Mark', // Will be set in next step
+        ...warehouseInfo
+      });
+    }
+
+    // Step 6: Calculate median split for dynamic categorization
+    const turnoverRates = performanceData.map(p => p.turnoverRate).sort((a, b) => a - b);
+    const revenuePotentials = performanceData.map(p => p.revenuePotential).sort((a, b) => a - b);
+
+    const medianTurnover = turnoverRates.length > 0
+      ? turnoverRates[Math.floor(turnoverRates.length / 2)]
+      : 0;
+    const medianRevenue = revenuePotentials.length > 0
+      ? revenuePotentials[Math.floor(revenuePotentials.length / 2)]
+      : 0;
+
+    // Step 7: Categorize products into quadrants
+    let stars = 0, cashCows = 0, questionMarks = 0, dogs = 0;
+
+    for (const product of performanceData) {
+      const highTurnover = product.turnoverRate >= medianTurnover;
+      const highRevenue = product.revenuePotential >= medianRevenue;
+
+      if (highTurnover && highRevenue) {
+        product.performanceCategory = 'Star';
+        stars++;
+      } else if (!highTurnover && highRevenue) {
+        product.performanceCategory = 'Cash Cow';
+        cashCows++;
+      } else if (highTurnover && !highRevenue) {
+        product.performanceCategory = 'Question Mark';
+        questionMarks++;
+      } else {
+        product.performanceCategory = 'Dog';
+        dogs++;
+      }
+    }
+
+    // Step 8: Sort and extract top/bottom performers
+    const starProducts = performanceData
+      .filter(p => p.performanceCategory === 'Star')
+      .sort((a, b) => b.revenuePotential - a.revenuePotential);
+
+    const dogProducts = performanceData
+      .filter(p => p.performanceCategory === 'Dog')
+      .sort((a, b) => a.revenuePotential - b.revenuePotential);
+
+    return {
+      summary: {
+        stars,
+        cashCows,
+        questionMarks,
+        dogs,
+        medianTurnover,
+        medianRevenue
+      },
+      products: performanceData,
+      topStars: starProducts.slice(0, 5),
+      bottomDogs: dogProducts.slice(0, 5)
     };
   }
 }
