@@ -53,7 +53,9 @@ class AnalyticsService {
 
   async getProductsBelowSafetyStock(): Promise<number> {
     const balances = await database.getInventoryBalances();
-    return balances.filter(b => b.qtyOnHand < b.safetyStock).length;
+    // NOTE: Data has safetyStock and reorderPoint swapped
+    // Using reorderPoint as the critical threshold (lower value)
+    return balances.filter(b => b.qtyOnHand < b.reorderPoint).length;
   }
 
   async calculatePendingPOValue(): Promise<number> {
@@ -272,9 +274,15 @@ class AnalyticsService {
     let ok = 0;
 
     for (const balance of balances) {
-      if (balance.qtyOnHand < balance.safetyStock) {
+      // NOTE: Data has safetyStock and reorderPoint swapped
+      // In the database: safetyStock > reorderPoint (incorrect)
+      // So we swap the comparison logic:
+      // - Critical: qty < reorderPoint (lower threshold)
+      // - Warning: qty >= reorderPoint AND qty < safetyStock
+      // - OK: qty >= safetyStock
+      if (balance.qtyOnHand < balance.reorderPoint) {
         critical++;
-      } else if (balance.qtyOnHand < balance.reorderPoint) {
+      } else if (balance.qtyOnHand < balance.safetyStock) {
         warning++;
       } else {
         ok++;
@@ -458,17 +466,20 @@ class AnalyticsService {
     const recommendations: ReorderRecommendation[] = [];
 
     for (const balance of balances) {
-      if (balance.qtyOnHand < balance.reorderPoint) {
+      // NOTE: Data has safetyStock and reorderPoint swapped
+      // Trigger reorder when qty < safetyStock (target level)
+      if (balance.qtyOnHand < balance.safetyStock) {
         const product = productMap.get(balance.productId);
         const warehouse = warehouseMap.get(balance.warehouseId);
 
-        const deficit = balance.reorderPoint - balance.qtyOnHand;
-        const recommendedQty = Math.max(deficit, balance.reorderPoint);
+        const deficit = balance.safetyStock - balance.qtyOnHand;
+        const recommendedQty = Math.max(deficit, balance.safetyStock);
 
         let urgency: 'High' | 'Medium' | 'Low' = 'Low';
-        if (balance.qtyOnHand < balance.safetyStock) {
+        // High urgency if below critical threshold (reorderPoint)
+        if (balance.qtyOnHand < balance.reorderPoint) {
           urgency = 'High';
-        } else if (balance.qtyOnHand < balance.reorderPoint * 0.7) {
+        } else if (balance.qtyOnHand < balance.safetyStock * 0.7) {
           urgency = 'Medium';
         }
 
@@ -602,18 +613,21 @@ class AnalyticsService {
         status: 'Critical'
       };
 
-      if (balance.qtyOnHand < balance.safetyStock) {
+      // NOTE: Data has safetyStock and reorderPoint swapped
+      // Using swapped comparison logic (same as getStockHealthStatus)
+      if (balance.qtyOnHand < balance.reorderPoint) {
         detail.status = 'Critical';
         criticalItems.push(detail);
-      } else if (balance.qtyOnHand < balance.reorderPoint) {
+      } else if (balance.qtyOnHand < balance.safetyStock) {
         detail.status = 'Warning';
         warningItems.push(detail);
       }
     }
 
     // Sort by urgency (most critical first)
-    criticalItems.sort((a, b) => (a.qtyOnHand / a.safetyStock) - (b.qtyOnHand / b.safetyStock));
-    warningItems.sort((a, b) => (a.qtyOnHand / a.reorderPoint) - (b.qtyOnHand / b.reorderPoint));
+    // Using swapped logic: critical uses reorderPoint, warning uses safetyStock
+    criticalItems.sort((a, b) => (a.qtyOnHand / a.reorderPoint) - (b.qtyOnHand / b.reorderPoint));
+    warningItems.sort((a, b) => (a.qtyOnHand / a.safetyStock) - (b.qtyOnHand / b.safetyStock));
 
     return {
       critical: criticalItems.slice(0, limit),
