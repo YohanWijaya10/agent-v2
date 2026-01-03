@@ -27,7 +27,12 @@ class DatabaseService {
   async getInventoryTransactions(): Promise<InventoryTransaction[]> {
     try {
       const response = await this.client.get<InventoryTransaction[]>('/api/inventorytransaction');
-      return response.data;
+      // API returns numeric values as strings, need to parse them
+      return response.data.map(trx => ({
+        ...trx,
+        qty: Number(trx.qty),
+        signedQty: Number(trx.signedQty)
+      }));
     } catch (error) {
       console.error('Error fetching inventory transactions:', error);
       throw error;
@@ -37,7 +42,14 @@ class DatabaseService {
   async getInventoryBalances(): Promise<InventoryBalance[]> {
     try {
       const response = await this.client.get<InventoryBalance[]>('/api/inventorybalance');
-      return response.data;
+      // API returns numeric values as strings, need to parse them
+      return response.data.map(balance => ({
+        ...balance,
+        qtyOnHand: Number(balance.qtyOnHand),
+        qtyReserved: Number(balance.qtyReserved),
+        safetyStock: Number(balance.safetyStock),
+        reorderPoint: Number(balance.reorderPoint)
+      }));
     } catch (error) {
       console.error('Error fetching inventory balances:', error);
       throw error;
@@ -67,7 +79,13 @@ class DatabaseService {
   async getPurchaseOrderItems(): Promise<PurchaseOrderItem[]> {
     try {
       const response = await this.client.get<PurchaseOrderItem[]>('/api/purchaseorderitem');
-      return response.data;
+      // API returns numeric values as strings, need to parse them
+      return response.data.map(item => ({
+        ...item,
+        qtyOrdered: Number(item.qtyOrdered),
+        unitCost: Number(item.unitCost),
+        qtyReceived: Number(item.qtyReceived)
+      }));
     } catch (error) {
       console.error('Error fetching purchase order items:', error);
       throw error;
@@ -77,7 +95,11 @@ class DatabaseService {
   async getSuppliers(): Promise<Supplier[]> {
     try {
       const response = await this.client.get<Supplier[]>('/api/suppliers');
-      return response.data;
+      // API returns numeric values as strings, need to parse them
+      return response.data.map(supplier => ({
+        ...supplier,
+        termsDays: Number(supplier.termsDays)
+      }));
     } catch (error) {
       console.error('Error fetching suppliers:', error);
       throw error;
