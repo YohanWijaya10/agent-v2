@@ -5,6 +5,8 @@
   ],
   "routes": [
     { "src": "/(.*)", "dest": "api/index.ts" }
+  ],
+  "crons": [
+    { "path": "/api/cron", "schedule": "30 6 * * *" }
   ]
 }
-
