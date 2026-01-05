@@ -864,6 +864,36 @@ class AnalyticsService {
         else if (Math.abs(changePercentage) >= 200) severity = 'high';
         else if (Math.abs(changePercentage) >= 150) severity = 'medium';
 
+        // Root-cause heuristics using recent/baseline windows
+        const rec = recentTrx.filter(t => t.productId === productId && t.warehouseId === warehouseId && t.trxType === type);
+        const base = baselineTrx.filter(t => t.productId === productId && t.warehouseId === warehouseId && t.trxType === type);
+        const groupByDay = (list: InventoryTransaction[]) => {
+          const m = new Map<string, number>();
+          for (const t of list) {
+            const d = new Date(t.trxDate);
+            const key = `${d.getFullYear()}-${d.getMonth()+1}-${d.getDate()}`;
+            m.set(key, (m.get(key) || 0) + t.qty);
+          }
+          return m;
+        };
+        const recDaily = groupByDay(rec);
+        const baseDaily = groupByDay(base);
+        const recActiveDays = Array.from(recDaily.values()).filter(v => v > 0).length;
+        const baseActiveDays = Array.from(baseDaily.values()).filter(v => v > 0).length;
+        const maxRecDaily = Math.max(0, ...Array.from(recDaily.values()));
+        const dupKey = (t: InventoryTransaction) => `${t.refType}|${t.refId}|${t.productId}|${t.trxType}`;
+        const dupMap = new Map<string, number>();
+        for (const t of rec) dupMap.set(dupKey(t), (dupMap.get(dupKey(t)) || 0) + 1);
+        const hasDuplicate = Array.from(dupMap.values()).some(c => c > 1);
+
+        let probableCause: AnomalyItem['probableCause'] = 'unknown';
+        const extreme = maxRecDaily > 5 * Math.max(1, recentAvg);
+        if (hasDuplicate) probableCause = 'duplicate_entry';
+        else if (extreme) probableCause = 'data_error';
+        else if (type === 'ISSUE' && changePercentage > 0) probableCause = 'demand_spike';
+        else if (type === 'RECEIPT' && changePercentage < 0) probableCause = 'receipt_delay';
+        else if (Math.abs(changePercentage) >= thresholdPercentage && recActiveDays >= 5 && baseActiveDays >= 5) probableCause = 'process_change';
+
         anomalies.push({
           anomalyId: `${productId}-${warehouseId}-${type}-${Date.now()}`,
           type: 'unusual_transaction',
@@ -876,7 +906,8 @@ class AnalyticsService {
           baselineValue: baselineAvg,
           currentValue: recentAvg,
           detectedAt: new Date().toISOString(),
-          description: `${type} ${changePercentage > 0 ? 'meningkat' : 'menurun'} ${Math.abs(changePercentage).toFixed(1)}% vs ${lookbackDays} hari sebelumnya`
+          description: `${type} ${changePercentage > 0 ? 'meningkat' : 'menurun'} ${Math.abs(changePercentage).toFixed(1)}% vs ${lookbackDays} hari sebelumnya`,
+          probableCause
         });
       }
     }
@@ -889,9 +920,11 @@ class AnalyticsService {
 
   async getCriticalAlerts(): Promise<{ summary: AlertSummary; alerts: AnomalyItem[] }> {
     // Aggregate multiple anomaly detection methods
-    const [unusualTrx, stockoutHistory] = await Promise.all([
+    const [unusualTrx, stockoutHistory, balances, products] = await Promise.all([
       this.detectUnusualTransactions(7, 150),
-      this.analyzeStockoutHistory(90)
+      this.analyzeStockoutHistory(90),
+      database.getInventoryBalances(),
+      database.getProducts()
     ]);
 
     const allAlerts: AnomalyItem[] = [...unusualTrx];
@@ -916,16 +949,142 @@ class AnalyticsService {
       }
     }
 
+    // Optional price variance anomalies
+    try {
+      if (process.env.PRICE_VARIANCE_ENABLED === '1') {
+        const priceAnoms = await this.detectPriceVariance();
+        allAlerts.push(...priceAnoms);
+      }
+    } catch {}
+
+    // Enrich with estimated impact
+    const balanceMap = new Map<string, { currentQty: number; safetyStock: number }>();
+    for (const b of balances) balanceMap.set(`${b.productId}|${b.warehouseId}`, { currentQty: b.qtyOnHand, safetyStock: b.safetyStock });
+
+    for (const a of allAlerts) {
+      const key = `${a.productId}|${a.warehouseId || ''}`;
+      const bal = balanceMap.get(key);
+      const notes: string[] = [];
+      const impact: NonNullable<AnomalyItem['estimatedImpact']> = {};
+      const isIssueSpike = a.type === 'unusual_transaction' && a.description.includes('ISSUE') && a.changePercentage > 0;
+      const isReceiptSpike = a.type === 'unusual_transaction' && a.description.includes('RECEIPT') && a.changePercentage > 0;
+      const recentAvgDaily = a.type === 'unusual_transaction' ? Math.max(0, a.currentValue) : 0;
+      if (bal && isIssueSpike && recentAvgDaily > 0) {
+        const aboveSafety = Math.max(0, bal.currentQty - bal.safetyStock);
+        const days = Math.floor(aboveSafety / recentAvgDaily);
+        if (Number.isFinite(days)) impact.stockRiskDays = days;
+        if (days <= 7) impact.potentialLostSalesQty = Math.max(0, Math.round(recentAvgDaily * (7 - Math.max(0, days))));
+        notes.push('Estimasi risiko stok tipis berdasarkan laju ISSUE 7 hari.');
+      }
+      if (bal && isReceiptSpike && bal.currentQty > 3 * bal.safetyStock) {
+        impact.excessQty = bal.currentQty - 3 * bal.safetyStock;
+        notes.push('Potensi overstock: qty saat ini >> safety stock.');
+      }
+      if (a.type === 'price_variance') notes.push('Variansi harga beli dapat mempengaruhi margin.');
+      if (notes.length) a.estimatedImpact = { ...a.estimatedImpact, ...impact, notes: notes.join(' ') };
+    }
+
     // Calculate summary
     const summary: AlertSummary = {
       critical: allAlerts.filter(a => a.severity === 'critical').length,
       high: allAlerts.filter(a => a.severity === 'high').length,
       medium: allAlerts.filter(a => a.severity === 'medium').length,
       low: allAlerts.filter(a => a.severity === 'low').length,
-      totalCount: allAlerts.length
+      totalCount: allAlerts.length,
+      meta: {
+        lowNotEmitted: true,
+        lowThresholdNote: 'Low severity is not emitted because unusual_transaction anomalies are only included when abs(changePercentage) >= 150%.'
+      }
     };
 
+    // Today priorities (top 3)
+    const severityScore = (s: SeverityLevel) => (s === 'critical' ? 3 : s === 'high' ? 2 : s === 'medium' ? 1 : 0);
+    const scored = allAlerts.map(a => {
+      let score = severityScore(a.severity);
+      if (a.probableCause === 'duplicate_entry' || a.probableCause === 'data_error') score += 1;
+      if (a.estimatedImpact?.stockRiskDays !== undefined && a.estimatedImpact.stockRiskDays <= 7) score += 1;
+      if (a.type === 'stockout') score += 1;
+      return { a, score };
+    }).sort((x, y) => y.score - x.score);
+    summary.todayPriorities = scored.slice(0, 3).map(({ a }) => {
+      const title = a.type === 'stockout' ? `Stockout berulang: ${a.productName}` : a.type === 'price_variance' ? `Perubahan biaya: ${a.productName}` : `Anomali ${a.description.split(' ')[0]}: ${a.productName}`;
+      const rationaleBits = [
+        `Severity ${a.severity}`,
+        a.probableCause ? `penyebab: ${a.probableCause.replace('_', ' ')}` : undefined,
+        `Δ ${Math.abs(a.changePercentage).toFixed(1)}%`
+      ].filter(Boolean);
+      const actions: string[] = [];
+      if (a.type === 'unusual_transaction') {
+        if (a.description.includes('ISSUE')) actions.push('Validasi SO & backlog');
+        if (a.description.includes('RECEIPT')) actions.push('Cek penerimaan PO & jadwal supplier');
+        actions.push('Audit duplikasi (refId/refType)', 'Lakukan cycle count');
+      } else if (a.type === 'stockout') {
+        actions.push('Rencanakan replenishment/transfer', 'Komunikasikan ETA ke sales');
+      } else if (a.type === 'price_variance') {
+        actions.push('Review terms/harga supplier', 'Evaluasi dampak margin');
+      }
+      let confidence: 'low' | 'medium' | 'high' = 'medium';
+      if (a.baselineValue === 0) confidence = 'low';
+      if (a.probableCause && a.probableCause !== 'unknown' && (a.severity === 'critical' || a.severity === 'high')) confidence = 'high';
+      return {
+        productId: a.productId,
+        warehouseId: a.warehouseId,
+        severity: a.severity,
+        title,
+        rationale: rationaleBits.join(' • '),
+        suggestedActions: actions,
+        confidence
+      };
+    });
+
     return { summary, alerts: allAlerts };
+  }
+
+  // Feature-flagged price variance detection
+  async detectPriceVariance(): Promise<AnomalyItem[]> {
+    const [poItems, products] = await Promise.all([
+      database.getPurchaseOrderItems(),
+      database.getProducts()
+    ]);
+    const now = new Date();
+    const d7 = new Date(now); d7.setDate(d7.getDate() - 7);
+    const d37 = new Date(d7); d37.setDate(d37.getDate() - 30);
+    const byProduct = new Map<string, PurchaseOrderItem[]>();
+    for (const it of poItems) {
+      if (!byProduct.has(it.productId)) byProduct.set(it.productId, []);
+      byProduct.get(it.productId)!.push(it);
+    }
+    const nameMap = new Map(products.map(p => [p.productId, p.name]));
+    const anomalies: AnomalyItem[] = [];
+    for (const [productId, list] of byProduct) {
+      const recent = list.filter(i => new Date(i.createdAt) >= d7);
+      const prior = list.filter(i => new Date(i.createdAt) >= d37 && new Date(i.createdAt) < d7);
+      if (recent.length < 3 || prior.length < 3) continue;
+      const avg = (arr: PurchaseOrderItem[]) => arr.reduce((s, x) => s + x.unitCost, 0) / arr.length;
+      const recentAvg = avg(recent);
+      const priorAvg = avg(prior);
+      if (priorAvg === 0) continue;
+      const changePercentage = ((recentAvg - priorAvg) / priorAvg) * 100;
+      const abs = Math.abs(changePercentage);
+      let severity: SeverityLevel = 'low';
+      if (abs >= 45) severity = 'critical'; else if (abs >= 30) severity = 'high'; else if (abs >= 20) severity = 'medium';
+      if (severity === 'low') continue;
+      anomalies.push({
+        anomalyId: `price-${productId}-${Date.now()}`,
+        type: 'price_variance',
+        productId,
+        productName: nameMap.get(productId) || 'Unknown',
+        severity,
+        changePercentage,
+        baselineValue: priorAvg,
+        currentValue: recentAvg,
+        detectedAt: new Date().toISOString(),
+        description: `Unit cost ${changePercentage > 0 ? 'naik' : 'turun'} ${abs.toFixed(1)}% vs 30 hari sebelum 7 hari terakhir`,
+        probableCause: 'process_change',
+        estimatedImpact: { notes: 'Variansi harga beli dapat mempengaruhi margin. Tinjau kontrak/terms.' }
+      });
+    }
+    return anomalies;
   }
 
   async analyzeStockoutHistory(days: number = 90): Promise<StockoutHistoryItem[]> {

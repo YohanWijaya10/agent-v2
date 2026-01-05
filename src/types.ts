@@ -277,6 +277,7 @@ export interface ProductPerformanceInsightResponse {
 // Anomaly Detection Types
 export type AnomalyType = 'unusual_transaction' | 'stockout' | 'price_variance';
 export type SeverityLevel = 'critical' | 'high' | 'medium' | 'low';
+export type ProbableCause = 'demand_spike' | 'receipt_delay' | 'duplicate_entry' | 'process_change' | 'data_error' | 'unknown';
 
 export interface AnomalyItem {
   anomalyId: string;
@@ -292,6 +293,13 @@ export interface AnomalyItem {
   detectedAt: string;
   description: string;
   insight?: string;
+  probableCause?: ProbableCause;
+  estimatedImpact?: {
+    stockRiskDays?: number;
+    excessQty?: number;
+    potentialLostSalesQty?: number;
+    notes?: string;
+  };
 }
 
 export interface AlertSummary {
@@ -300,6 +308,19 @@ export interface AlertSummary {
   medium: number;
   low: number;
   totalCount: number;
+  meta?: {
+    lowNotEmitted: true;
+    lowThresholdNote: string;
+  };
+  todayPriorities?: {
+    productId: string;
+    warehouseId?: string;
+    severity: SeverityLevel;
+    title: string;
+    rationale: string;
+    suggestedActions: string[];
+    confidence: 'low' | 'medium' | 'high';
+  }[];
 }
 
 export interface StockoutHistoryItem {

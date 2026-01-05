@@ -415,21 +415,21 @@ PENTING:
   }
 });
 
-// Get anomaly detection data
-router.get('/anomaly-detection', async (req: Request, res: Response) => {
-  try {
-    const [unusualTrx, criticalAlerts, stockoutHistory] = await Promise.all([
-      analytics.detectUnusualTransactions(7, 150),
-      analytics.getCriticalAlerts(),
-      analytics.analyzeStockoutHistory(90)
-    ]);
+  // Get anomaly detection data
+  router.get('/anomaly-detection', async (req: Request, res: Response) => {
+    try {
+      const [unusualTrx, criticalAlerts, stockoutHistory] = await Promise.all([
+        analytics.detectUnusualTransactions(7, 150),
+        analytics.getCriticalAlerts(),
+        analytics.analyzeStockoutHistory(90)
+      ]);
 
-    const responseData: AnomalyDetectionResponse = {
+      const responseData: AnomalyDetectionResponse = {
       summary: criticalAlerts.summary,
-      anomalies: criticalAlerts.alerts,
-      stockoutHistory,
-      generatedAt: new Date().toISOString()
-    };
+        anomalies: criticalAlerts.alerts,
+        stockoutHistory,
+        generatedAt: new Date().toISOString()
+      };
 
     res.json(responseData);
   } catch (error: any) {
@@ -441,23 +441,25 @@ router.get('/anomaly-detection', async (req: Request, res: Response) => {
   }
 });
 
-// Get AI-generated anomaly insights
-router.get('/anomaly-insights', async (req: Request, res: Response) => {
-  try {
-    const anomalyData = await analytics.getCriticalAlerts();
-    const stockoutHistory = await analytics.analyzeStockoutHistory(90);
+  // Get AI-generated anomaly insights
+  router.get('/anomaly-insights', async (req: Request, res: Response) => {
+    try {
+      const anomalyData = await analytics.getCriticalAlerts();
+      const stockoutHistory = await analytics.analyzeStockoutHistory(90);
 
-    const topCritical = anomalyData.alerts
-      .filter(a => a.severity === 'critical')
-      .slice(0, 5);
+      const topCritical = anomalyData.alerts
+        .filter(a => a.severity === 'critical')
+        .slice(0, 5);
 
-    const prompt = `Analisis anomali inventory berdasarkan data berikut:
+      const prompt = `Analisis anomali inventory berdasarkan data berikut:
 
 **Alert Summary:**
 - Critical: ${anomalyData.summary.critical} alerts
 - High: ${anomalyData.summary.high} alerts
 - Medium: ${anomalyData.summary.medium} alerts
 - Low: ${anomalyData.summary.low} alerts
+
+Catatan: ${anomalyData.summary.meta?.lowThresholdNote || 'Low severity tidak ditampilkan karena di bawah ambang batas deteksi.'}
 
 **Top 5 Critical Anomalies:**
 ${topCritical.map((a, i) => `${i + 1}. ${a.productName} (${a.warehouseName}): ${a.description}`).join('\n')}
@@ -488,15 +490,15 @@ PENTING:
 - Fokus pada actionable insights
 - Jangan gunakan bullet points, hanya paragraf`;
 
-    const systemMessage = 'Anda adalah AI Analyst untuk anomaly detection dalam inventory management. Berikan analisis yang mendalam, actionable, dan fokus pada risk mitigation dalam Bahasa Indonesia.';
-    const insightsText = await deepseek.generateTextOnly(prompt, systemMessage);
+      const systemMessage = 'Anda adalah AI Analyst untuk anomaly detection dalam inventory management. Berikan analisis yang mendalam, actionable, dan fokus pada risk mitigation dalam Bahasa Indonesia.';
+      const insightsText = await deepseek.generateTextOnly(prompt, systemMessage);
 
-    const responseData: AnomalyInsightResponse = {
-      insights: insightsText,
-      topCriticalItems: topCritical.map(a => a.productName),
-      recommendations: [],
-      generatedAt: new Date().toISOString()
-    };
+      const responseData: AnomalyInsightResponse = {
+        insights: insightsText,
+        topCriticalItems: topCritical.map(a => a.productName),
+        recommendations: [],
+        generatedAt: new Date().toISOString()
+      };
 
     res.json(responseData);
   } catch (error: any) {
