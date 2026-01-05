@@ -23,7 +23,10 @@ import {
   AnomalyItem,
   AlertSummary,
   StockoutHistoryItem,
-  SeverityLevel
+  SeverityLevel,
+  SafetyStockPolicy,
+  SafetyStockAutoAdjustResponse,
+  SafetyStockAdjustment
 } from '../types';
 
 class AnalyticsService {
@@ -552,6 +555,123 @@ class AnalyticsService {
     }
 
     return turnoverData.sort((a, b) => b.turnoverRate - a.turnoverRate);
+  }
+
+  // Auto-adjust safety stock per warehouse
+  async autoAdjustSafetyStock(
+    warehouseId: string,
+    policy: SafetyStockPolicy = {}
+  ): Promise<SafetyStockAutoAdjustResponse> {
+    const {
+      serviceLevel = 0.95,
+      leadTimeDays = 7,
+      maxChangePercent = 20,
+      roundToPack = null,
+      minSafetyStock = 0
+    } = policy;
+
+    const zTable: Record<number, number> = {
+      0.9: 1.2816,
+      0.95: 1.6449,
+      0.975: 1.96,
+      0.99: 2.3263
+    } as const;
+    // Use nearest key if not exact
+    const nearest = Object.keys(zTable)
+      .map(Number)
+      .reduce((prev, curr) => (Math.abs(curr - serviceLevel) < Math.abs(prev - serviceLevel) ? curr : prev), 0.95);
+    const z = zTable[nearest] || 1.6449;
+
+    const windowDays = 30;
+    const [transactions, balances, products, warehouses] = await Promise.all([
+      database.getInventoryTransactions(),
+      database.getInventoryBalances(),
+      database.getProducts(),
+      database.getWarehouses()
+    ]);
+
+    const productMap = new Map(products.map(p => [p.productId, p]));
+    const warehouseMap = new Map(warehouses.map(w => [w.warehouseId, w]));
+
+    const targetBalances = balances.filter(b => b.warehouseId === warehouseId);
+
+    // Build date keys for last windowDays
+    const dates: string[] = [];
+    const today = new Date();
+    for (let i = windowDays - 1; i >= 0; i--) {
+      const d = new Date(today);
+      d.setDate(today.getDate() - i);
+      dates.push(d.toISOString().slice(0, 10));
+    }
+
+    // Index transactions by day/product for quick sum (ISSUE only)
+    const trxByKey = new Map<string, number>();
+    for (const t of transactions) {
+      if (t.trxType !== 'ISSUE') continue;
+      const d = new Date(t.trxDate).toISOString().slice(0, 10);
+      if (!dates.includes(d)) continue;
+      const key = `${d}|${t.productId}|${t.warehouseId}`;
+      trxByKey.set(key, (trxByKey.get(key) || 0) + Number(t.qty));
+    }
+
+    const changes: SafetyStockAdjustment[] = [];
+
+    for (const bal of targetBalances) {
+      const daily: number[] = dates.map(date => trxByKey.get(`${date}|${bal.productId}|${bal.warehouseId}`) || 0);
+      // Basic robust stats: clamp extreme outliers at 95th percentile
+      const sorted = [...daily].sort((a, b) => a - b);
+      const p95 = sorted[Math.floor(0.95 * (sorted.length - 1))] || 0;
+      const clamped = daily.map(v => Math.min(v, p95));
+      const mean = clamped.reduce((s, v) => s + v, 0) / (clamped.length || 1);
+      const variance = clamped.reduce((s, v) => s + (v - mean) * (v - mean), 0) / (Math.max(1, clamped.length - 1));
+      const stdDaily = Math.sqrt(variance);
+
+      const sigmaLT = stdDaily * Math.sqrt(Math.max(1, leadTimeDays));
+      let recommended = Math.max(minSafetyStock, Math.round(z * sigmaLT));
+
+      // Apply change cap relative to current
+      const current = Number(bal.safetyStock) || 0;
+      if (maxChangePercent > 0) {
+        const maxUp = Math.round(current * (1 + maxChangePercent / 100));
+        const maxDown = Math.round(current * (1 - maxChangePercent / 100));
+        recommended = Math.min(recommended, maxUp);
+        recommended = Math.max(recommended, maxDown);
+      }
+
+      // Round to pack if provided
+      if (roundToPack && roundToPack > 0) {
+        const packs = Math.max(1, Math.round(recommended / roundToPack));
+        recommended = packs * roundToPack;
+      }
+
+      if (!Number.isFinite(recommended)) recommended = current;
+
+      if (recommended !== current) {
+        // Persist change
+        await database.updateInventoryBalance(bal.warehouseId, bal.productId, { safetyStock: recommended });
+        const product = productMap.get(bal.productId);
+        const wh = warehouseMap.get(bal.warehouseId);
+        const changePercent = current === 0 ? 100 : ((recommended - current) / Math.max(1, current)) * 100;
+        changes.push({
+          productId: bal.productId,
+          productName: product?.name || 'Unknown',
+          warehouseId: bal.warehouseId,
+          warehouseName: wh?.name || 'Unknown',
+          currentSafetyStock: current,
+          recommendedSafetyStock: recommended,
+          changePercent,
+          reason: `z=${z.toFixed(2)}, σ_d=${stdDaily.toFixed(2)}, LT=${leadTimeDays}d`
+        });
+      }
+    }
+
+    return {
+      warehouseId,
+      appliedCount: changes.length,
+      totalCandidates: targetBalances.length,
+      changes: changes.sort((a, b) => Math.abs(b.changePercent) - Math.abs(a.changePercent)),
+      generatedAt: new Date().toISOString()
+    };
   }
 
   async generateExecutiveSummary(): Promise<{

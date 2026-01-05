@@ -510,4 +510,19 @@ PENTING:
   }
 });
 
+// Auto-adjust safety stock and apply updates (per warehouse)
+router.post('/safety-stock-auto-adjust', async (req: Request, res: Response) => {
+  try {
+    const { warehouseId, policy } = req.body || {};
+    if (!warehouseId) {
+      return res.status(400).json({ error: 'warehouseId is required' });
+    }
+    const result = await analytics.autoAdjustSafetyStock(warehouseId, policy);
+    res.json(result);
+  } catch (error: any) {
+    console.error('Error auto-adjusting safety stock:', error);
+    res.status(500).json({ error: 'Failed to auto-adjust safety stock', message: error.message });
+  }
+});
+
 export default router;

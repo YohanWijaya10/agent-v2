@@ -116,6 +116,30 @@ class DatabaseService {
     }
   }
 
+  async updateInventoryBalance(
+    warehouseId: string,
+    productId: string,
+    patch: Partial<InventoryBalance>
+  ): Promise<InventoryBalance> {
+    try {
+      // Some backends accept PATCH on collection with composite keys in body
+      const payload = { warehouseId, productId, ...patch };
+      const response = await this.client.patch<InventoryBalance>('/api/inventorybalance', payload);
+      // Normalize numeric fields
+      const b = response.data as any;
+      return {
+        ...response.data,
+        qtyOnHand: Number(b.qtyOnHand),
+        qtyReserved: Number(b.qtyReserved),
+        safetyStock: Number(b.safetyStock),
+        reorderPoint: Number(b.reorderPoint)
+      };
+    } catch (error) {
+      console.error('Error updating inventory balance:', error);
+      throw error;
+    }
+  }
+
   // Combined fetch for efficiency
   async getAllData() {
     try {

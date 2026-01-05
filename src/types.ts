@@ -348,3 +348,31 @@ export interface AnomalyInsightResponse {
   recommendations: string[];
   generatedAt: string;
 }
+
+// Safety Stock Auto-Adjust Types
+export interface SafetyStockPolicy {
+  serviceLevel?: number; // e.g., 0.95
+  leadTimeDays?: number; // e.g., 7
+  maxChangePercent?: number; // cap per SKU change, e.g., 20 means +/-20%
+  roundToPack?: number | null; // pack size rounding, null to disable
+  minSafetyStock?: number; // floor value
+}
+
+export interface SafetyStockAdjustment {
+  productId: string;
+  productName: string;
+  warehouseId: string;
+  warehouseName: string;
+  currentSafetyStock: number;
+  recommendedSafetyStock: number;
+  changePercent: number;
+  reason: string;
+}
+
+export interface SafetyStockAutoAdjustResponse {
+  warehouseId: string;
+  appliedCount: number;
+  totalCandidates: number;
+  changes: SafetyStockAdjustment[];
+  generatedAt: string;
+}
